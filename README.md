@@ -9,6 +9,67 @@ model, which rewrites it into a compact factual replacement — e.g. a full file
 "checked file A: contains only X". The newest N turns are always kept verbatim. The curator
 never performs the objective or writes code; its output replaces old history in context.
 
+## Why use inception?
+
+In long coding and chat sessions, context quickly accumulates noise:
+
+- Multi-page tool outputs, file dumps, and build logs.
+- Failed search attempts and discarded exploration paths.
+- Boilerplate code that can easily be regenerated.exit
+
+Standard compaction routines ask an agent to summarize a nearly full context window in one pass.  This is challenging because the compacting agent needs to figure out what is important over a very full context window, and has only one chance to do so.  
+
+
+
+This extension replaces the standard compaction routine with one that runs every three turns, so the 'curating' agent can concentrate on maintaining important information and discarding or summarizing information with a reasonable context.  
+
+The resulting context left for the 'main' agent is kept as short as it must be, and is _informationally dense._
+
+
+
+[Initial test results](https://github.com/pxp888/memento/blob/main/testing.md)
+
+
+
+### Curating agent prompt:
+
+> You are the Context Gardener for a coding agent. Your responsibility is to reduce the agent's conversation context while preserving everything necessary to continue its current objective correctly.
+> 
+> Review the eligible historical conversation and produce a concise replacement that allows the main agent to resume work without repeating investigations, losing important discoveries, or undoing successful changes.
+> 
+> Prioritize preserving:
+> 
+> 1. The current objective, requirements, acceptance criteria, and constraints.
+> 2. Current implementation state, including relevant files, functions, nterfaces,
+>    and successful changes.
+> 3. Important discoveries, including failed searches, negative findings,
+>    environmental limitations, and rejected approaches.
+> 4. Decisions already made and their rationale.
+> 5. Outstanding work, unresolved questions, blockers, and the next useful steps.
+> 6. Relevant user instructions and preferences.
+> 
+> Remove verbose tool outputs, irrelevant exploration, redundant explanations,
+> superseded plans, and boilerplate that can safely be regenerated.
+> 
+> Do not treat a failed investigation as worthless. Preserve its conclusion whenever it prevents repeated work or constrains future decisions. Prefer a short factual statement over a transcript of the investigation.
+> 
+> Do not invent facts, infer that an operation succeeded when only an attempt is
+> recorded, or claim that files contain particular code unless the available context supports that claim.
+> 
+> The newest protected turns are outside your editing scope. Preserve their contents exactly.
+> 
+> Produce a compact, factual context replacement. Optimize for the main agent's ability to continue working, not for a comprehensive historical narrative. When uncertain whether information is essential, preserve it in a concise form rather than deleting it.
+> 
+> Operational rules:
+> 
+> - Keep your internal reasoning/thinking concise. Do not overthink; proceed directly
+>   to extracting and updating the state.
+> - Your replacement will be shown to the main agent as its session state, in place of
+>   the summarized history.
+> - Output only the replacement context: no preamble, no closing remarks, no markdown code fences.
+
+
+
 ## Install & usage
 
 The extension is two files (`index.ts` imports `./boundary.ts`) — always copy both. Pick **one** install location per machine; installing in more than one makes pi reject the duplicate `--inception-*` flags:
@@ -23,11 +84,11 @@ pi --extension /path/to/inception/index.ts
 
 Flags (all optional):
 
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `--inception-frequency` | `3` | Run curation every N turns. Each model call counts as a turn, tool calls included (pi's `turn_end`). |
-| `--inception-protected-head` | `5` | Keep the newest N turns untouched; only older history is curated. |
-| `--inception-model` | current session model | Curator model as `provider/modelId`, e.g. `google/gemini-2.5-flash` for cheap curation. |
+| Flag                         | Default               | Meaning                                                                                              |
+| ---------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `--inception-frequency`      | `3`                   | Run curation every N turns. Each model call counts as a turn, tool calls included (pi's `turn_end`). |
+| `--inception-protected-head` | `5`                   | Keep the newest N turns untouched; only older history is curated.                                    |
+| `--inception-model`          | current session model | Curator model as `provider/modelId`, e.g. `google/gemini-2.5-flash` for cheap curation.              |
 
 ## How it works
 
