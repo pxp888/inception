@@ -56,7 +56,7 @@ This should be implemented as a pi coding agent extension that replaces the stan
    recorded, or claim that files contain particular code unless the available context
    supports that claim.
 
-   The newest protected turns are outside your editing scope. Preserve their contents exactly.
+   After this prompt you will find the agent's most recent turns inside <recent_turns>: they remain verbatim in its context and are outside your editing scope, so do not alter them or repeat them (or their substance) in your output. Use them — including tool outputs and reasoning — to decide what state the main agent actually needs.
 
    Produce a compact, factual context replacement. Optimize for the main agent's ability
    to continue working, not for a comprehensive historical narrative. When uncertain

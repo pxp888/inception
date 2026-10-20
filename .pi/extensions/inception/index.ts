@@ -4,7 +4,8 @@
  * Replaces pi's standard compaction routine with a "Context Gardener": every N turns
  * (each model call counts as a turn, tool calls included) the history older than the
  * protected head of recent turns is handed to a second LLM that rewrites it into a
- * compact factual replacement. The newest N turns are always kept verbatim.
+ * compact factual replacement. The newest N turns are always kept verbatim; they are also
+ * shown to the curator read-only so it curates by what the agent needs next.
  *
  * Scheduled curation commits its compaction entry from the `turn_end` boundary, so an
  * in-flight agent run pauses for the curator call and then resumes — pi's manual
@@ -13,14 +14,14 @@
  * via `session_before_compact` and curated the same way, which keeps long single-prompt
  * runs safe mid-loop.
  *
- * Usage:
- *   pi --extension /path/to/inception/index.ts
+ * Usage (auto-loaded from a project's .pi/extensions, or):
+ *   pi --extension /path/to/inception/.pi/extensions/inception/index.ts
  *   pi --extension ... --inception-frequency 4 --inception-protected-head 6 \
  *      --inception-model google/gemini-2.5-flash
  */
 
 import { uuidv7 } from "@earendil-works/pi-ai";
-import type { Model, Usage } from "@earendil-works/pi-ai";
+import type { Message, Model, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionProjection } from "@earendil-works/pi-coding-agent";
 import { buildSessionProjection, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import type { CurationPlan } from "./boundary.ts";
@@ -30,7 +31,7 @@ const DEFAULT_FREQUENCY = 3; // curate every N turns (a model call + its tool ba
 const DEFAULT_PROTECTED_HEAD = 5; // keep the newest N turns verbatim
 const MAX_SUMMARY_TOKENS = 8192;
 
-// Suggested curator prompt from design.md, verbatim.
+// Curator prompt (design.md; the protected-head line is updated for the <recent_turns> block).
 const CURATOR_PROMPT = `You are the Context Gardener for a coding agent. Your responsibility is to reduce
 the agent's conversation context while preserving everything necessary to continue
 its current objective correctly.
@@ -60,7 +61,7 @@ Do not invent facts, infer that an operation succeeded when only an attempt is
 recorded, or claim that files contain particular code unless the available context
 supports that claim.
 
-The newest protected turns are outside your editing scope. Preserve their contents exactly.
+After this prompt you will find the agent's most recent turns inside <recent_turns>: they remain verbatim in its context and are outside your editing scope, so do not alter them or repeat them (or their substance) in your output. Use them — including tool outputs and reasoning — to decide what state the main agent actually needs.
 
 Produce a compact, factual context replacement. Optimize for the main agent's ability
 to continue working, not for a comprehensive historical narrative. When uncertain
@@ -112,15 +113,56 @@ export default function inception(pi: ExtensionAPI) {
 		return ctx.model;
 	};
 
-	/** Messages eligible for curation: the live region before the protected head. */
-	const eligibleMessages = (projection: SessionProjection, plan: CurationPlan) =>
+	const regionMessages = (projection: SessionProjection, from: number, to?: number) =>
 		projection.entries
-			.slice(plan.boundaryStart, plan.cutIndex)
+			.slice(from, to)
 			.flatMap((e) => (e.sourceEntry.type === "compaction" ? [] : e.messages.filter((m) => m.role !== "system")));
+
+	/** Messages eligible for curation: the live region before the protected head. */
+	const eligibleMessages = (projection: SessionProjection, plan: CurationPlan) => regionMessages(projection, plan.boundaryStart, plan.cutIndex);
+
+	/** Protected head messages: what stays verbatim in context; shown to the curator read-only. */
+	const headMessages = (projection: SessionProjection, plan: CurationPlan) => regionMessages(projection, plan.cutIndex);
+
+	// Full-fidelity render of the protected head. Unlike serializeConversation (used for the
+	// region being summarized) this keeps thinking blocks and untruncated tool results:
+	// the curator needs complete recent turns to judge what state is still needed.
+	const contentText = (content: string | Array<{ type?: string; text?: string }>): string => {
+		if (typeof content === "string") return content;
+		const texts: string[] = [];
+		let images = 0;
+		for (const c of content) {
+			if (c.type === "text" && typeof c.text === "string") texts.push(c.text);
+			else if (c.type === "image") images += 1;
+		}
+		return images ? `${texts.join("\n")} [+${images} image(s)]` : texts.join("\n");
+	};
+
+	const renderHead = (messages: Message[]): string => {
+		const parts: string[] = [];
+		for (const msg of messages) {
+			if (msg.role === "user") {
+				const text = contentText(msg.content).trim();
+				if (text) parts.push(`[User]: ${text}`);
+			} else if (msg.role === "assistant") {
+				const calls: string[] = [];
+				for (const block of msg.content) {
+					if (block.type === "text" && block.text.trim()) parts.push(`[Assistant]: ${block.text.trim()}`);
+					else if (block.type === "thinking" && !block.redacted && block.thinking.trim()) parts.push(`[Assistant thinking]: ${block.thinking.trim()}`);
+					else if (block.type === "toolCall") calls.push(`${block.name}(${Object.entries(block.arguments).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})`);
+				}
+				if (calls.length) parts.push(`[Assistant tool calls]: ${calls.join("; ")}`);
+			} else if (msg.role === "toolResult") {
+				const text = contentText(msg.content).trim();
+				parts.push(`${msg.isError ? "[Tool error]" : `[Tool result: ${msg.toolName}]`}${text ? `: ${text}` : ""}`);
+			}
+		}
+		return parts.join("\n\n");
+	};
 
 	const runCurator = async (
 		ctx: ExtensionContext,
-		options: { conversationText: string; eligibleCount: number; previousSummary?: string; instructions?: string; signal?: AbortSignal },
+		options: { conversationText: string; eligibleCount: number; previousSummary?: string; headText?: string; instructions?: string; signal?: AbortSignal },
 	): Promise<{ summary: string; usage?: Usage } | undefined> => {
 		const model = resolveCuratorModel(ctx);
 		if (!model) return undefined; // caller decides how to react (skip vs default fallback)
@@ -129,6 +171,7 @@ export default function inception(pi: ExtensionAPI) {
 			? `\n\nPrevious curated context from an earlier curation pass. Your output replaces it, so carry forward anything still relevant:\n${options.previousSummary}\n`
 			: "";
 		const instructionsBlock = options.instructions ? `\nAdditional focus for this curation pass:\n${options.instructions}\n` : "";
+	const headBlock = options.headText ? `\n\n<recent_turns>\n${options.headText}\n</recent_turns>` : "";
 
 		notify(ctx, `inception: curating ${options.eligibleCount} messages with ${model.provider}/${model.id}`, "info");
 		const response = await ctx.modelRegistry.complete(
@@ -137,7 +180,7 @@ export default function inception(pi: ExtensionAPI) {
 				messages: [
 					{
 						role: "user" as const,
-						content: [{ type: "text" as const, text: `${CURATOR_PROMPT}${previousBlock}${instructionsBlock}\n\n<conversation>\n${options.conversationText}\n</conversation>` }],
+						content: [{ type: "text" as const, text: `${CURATOR_PROMPT}${headBlock}${previousBlock}${instructionsBlock}\n\n<conversation>\n${options.conversationText}\n</conversation>` }],
 						timestamp: Date.now(),
 					},
 				],
@@ -163,7 +206,7 @@ export default function inception(pi: ExtensionAPI) {
 		const eligible = eligibleMessages(projection, plan);
 		const firstKeptId = projection.entries[plan.cutIndex].sourceEntry.id as string | undefined;
 		if (eligible.length === 0 || !firstKeptId) return undefined;
-		return { plan, eligible, firstKeptId };
+		return { plan, eligible, firstKeptId, headText: renderHead(convertToLlm(headMessages(projection, plan))) };
 	};
 
 	// Frequency trigger. Each turn_end is one model call plus its tool batch, so
@@ -184,6 +227,7 @@ export default function inception(pi: ExtensionAPI) {
 				conversationText: serializeConversation(convertToLlm(target.eligible)),
 				eligibleCount: target.eligible.length,
 				previousSummary: target.plan.previousSummary,
+				headText: target.headText,
 				signal: ctx.signal,
 			});
 			if (!result || !result.summary) return undefined; // empty curator output: keep counting, retry in N turns
@@ -226,6 +270,7 @@ export default function inception(pi: ExtensionAPI) {
 					conversationText: serializeConversation(convertToLlm(target.eligible)),
 					eligibleCount: target.eligible.length,
 					previousSummary: target.plan.previousSummary,
+					headText: target.headText,
 					instructions: customInstructions,
 					signal, // honor aborts of the compaction itself
 				});

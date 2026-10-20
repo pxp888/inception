@@ -6,7 +6,8 @@ the primary agent's context so it can work without accumulating unnecessary info
 
 Every N turns, everything older than a protected head of recent turns is handed to the curator
 model, which rewrites it into a compact factual replacement — e.g. a full file read becomes
-"checked file A: contains only X". The newest N turns are always kept verbatim. The curator
+"checked file A: contains only X". The newest N turns are always kept verbatim; the curator also
+sees them (read-only) so it can judge what old state they still need. The curator
 never performs the objective or writes code; its output replaces old history in context.
 
 ## Why use inception?
@@ -15,7 +16,7 @@ In long coding and chat sessions, context quickly accumulates noise:
 
 - Multi-page tool outputs, file dumps, and build logs.
 - Failed search attempts and discarded exploration paths.
-- Boilerplate code that can easily be regenerated.exit
+- Boilerplate code that can easily be regenerated.
 
 Standard compaction routines ask an agent to summarize a nearly full context window in one pass.  This is challenging because the compacting agent needs to figure out what is important over a very full context window, and has only one chance to do so.  
 
@@ -40,7 +41,7 @@ The resulting context left for the 'main' agent is kept as short as it must be, 
 > Prioritize preserving:
 > 
 > 1. The current objective, requirements, acceptance criteria, and constraints.
-> 2. Current implementation state, including relevant files, functions, nterfaces,
+> 2. Current implementation state, including relevant files, functions, interfaces,
 >    and successful changes.
 > 3. Important discoveries, including failed searches, negative findings,
 >    environmental limitations, and rejected approaches.
@@ -56,7 +57,7 @@ The resulting context left for the 'main' agent is kept as short as it must be, 
 > Do not invent facts, infer that an operation succeeded when only an attempt is
 > recorded, or claim that files contain particular code unless the available context supports that claim.
 > 
-> The newest protected turns are outside your editing scope. Preserve their contents exactly.
+> After this prompt you will find the agent's most recent turns inside <recent_turns>: they remain verbatim in its context and are outside your editing scope, so do not alter them or repeat them (or their substance) in your output. Use them — including tool outputs and reasoning — to decide what state the main agent actually needs.
 > 
 > Produce a compact, factual context replacement. Optimize for the main agent's ability to continue working, not for a comprehensive historical narrative. When uncertain whether information is essential, preserve it in a concise form rather than deleting it.
 > 
@@ -72,14 +73,14 @@ The resulting context left for the 'main' agent is kept as short as it must be, 
 
 ## Install & usage
 
-The extension is two files (`index.ts` imports `./boundary.ts`) — always copy both. Pick **one** install location per machine; installing in more than one makes pi reject the duplicate `--inception-*` flags:
+The extension is two files under `.pi/extensions/inception/` (`index.ts` imports `./boundary.ts`) — always copy both. Pick **one** install location per machine; installing in more than one makes pi reject the duplicate `--inception-*` flags:
 
-- Global (all projects): `mkdir -p ~/.pi/agent/extensions/inception && cp index.ts boundary.ts ~/.pi/agent/extensions/inception/`
-- Per-project: copy both files into `<project>/.pi/extensions/inception/`
-- No install at all: `pi --extension /path/to/inception/index.ts` (use this while developing)
+- Global (all projects): `mkdir -p ~/.pi/agent/extensions/inception && cp .pi/extensions/inception/index.ts .pi/extensions/inception/boundary.ts ~/.pi/agent/extensions/inception/`
+- Per-project: copy both files into `<project>/.pi/extensions/inception/` (this repo's own layout)
+- No install at all: `pi --extension /path/to/inception/.pi/extensions/inception/index.ts` (use this while developing)
 
 ```sh
-pi --extension /path/to/inception/index.ts
+pi --extension /path/to/inception/.pi/extensions/inception/index.ts
 ```
 
 Flags (all optional):
@@ -113,12 +114,20 @@ Notes:
 
 ## Development
 
+No package manifest is needed: pi resolves `@earendil-works/*` imports for extensions from its own install, and the tests run under plain node.
+
 ```sh
-npm install        # dev deps: pi-coding-agent + typescript for typechecking
-npm test           # node --test test.ts  (pure boundary logic, no LLM needed)
-npx tsc --noEmit --strict --skipLibCheck --target es2022 --module nodenext \
-    --moduleResolution nodenext --allowImportingTsExtensions index.ts test.ts boundary.ts
+node --test .pi/extensions/inception/test.ts   # pure boundary logic, no LLM needed
 ```
 
-Files: `index.ts` (extension), `boundary.ts` (pure turn-boundary math, dependency-free),
-`test.ts` (unit tests for the boundary logic).
+Optional typechecking (needs local dev deps):
+
+```sh
+npm init -y && npm i -D typescript @earendil-works/pi-coding-agent @earendil-works/pi-ai
+npx tsc --noEmit --strict --skipLibCheck --target es2022 --module nodenext \
+    --moduleResolution nodenext --allowImportingTsExtensions \
+    .pi/extensions/inception/index.ts .pi/extensions/inception/test.ts .pi/extensions/inception/boundary.ts
+```
+
+Files, all in `.pi/extensions/inception/`: `index.ts` (extension),
+`boundary.ts` (pure turn-boundary math, dependency-free), `test.ts` (unit tests for the boundary logic).
