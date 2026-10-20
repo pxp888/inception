@@ -1,0 +1,15 @@
+{
+	"name": "inception",
+	"version": "0.1.0",
+	"description": "pi coding agent extension: curator-agent context compaction with a protected head of recent turns",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"test": "node --test test.ts"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^1.3.0",
+		"@earendil-works/pi-coding-agent": "^1.3.0",
+		"typescript": "^7.0.2"
+	}
+}
