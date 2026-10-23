@@ -1,5 +1,7 @@
 # inception
 
+## **This is an ongoing experiment, don't use it seriously.**
+
 A [pi](https://github.com/badlogic/pi-mono) coding agent extension that replaces the standard
 compaction routine with a **Context Gardener**: a second LLM that curates (trims/summarizes)
 the primary agent's context so it can work without accumulating unnecessary information.
