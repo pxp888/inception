@@ -7,6 +7,10 @@
  * compact factual replacement. The newest N turns are always kept verbatim; they are also
  * shown to the curator read-only so it curates by what the agent needs next.
  *
+ * The older region being summarized keeps a head+tail excerpt of each assistant thinking
+ * block (serialize.ts): decisions, rejected approaches and negative findings exist only in
+ * reasoning, and curation is the last moment that text exists in the session.
+ *
  * Scheduled curation commits its compaction entry from the `turn_end` boundary, so an
  * in-flight agent run pauses for the curator call and then resumes — pi's manual
  * `ctx.compact()` entry point is deliberately not used because it aborts the current
@@ -23,7 +27,8 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { Message, Model, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionProjection } from "@earendil-works/pi-coding-agent";
-import { buildSessionProjection, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { serializeConversationWithReasoning } from "./serialize.ts";
 import type { CurationPlan } from "./boundary.ts";
 import { planCuration } from "./boundary.ts";
 
@@ -31,7 +36,7 @@ const DEFAULT_FREQUENCY = 3; // curate every N turns (a model call + its tool ba
 const DEFAULT_PROTECTED_HEAD = 5; // keep the newest N turns verbatim
 const MAX_SUMMARY_TOKENS = 8192;
 
-// Curator prompt (design.md; the protected-head line is updated for the <recent_turns> block).
+// Curator prompt (design.md; updated for the <recent_turns> block and the reasoning excerpts).
 const CURATOR_PROMPT = `You are the Context Gardener for a coding agent. Your responsibility is to reduce
 the agent's conversation context while preserving everything necessary to continue
 its current objective correctly.
@@ -57,9 +62,17 @@ Do not treat a failed investigation as worthless. Preserve its conclusion whenev
 it prevents repeated work or constrains future decisions. Prefer a short factual
 statement over a transcript of the investigation.
 
+The summarized region labels reasoning as [Assistant thinking (excerpt)]: the assistant's
+own internal thinking, cut to the opening and closing parts of each block. It records what
+the assistant believed and decided, not verified facts - a plan written in reasoning may
+never have been executed. Extract conclusions and decisions from it; do not transcribe it,
+and do not carry forward a belief that no tool result confirms or that a later message
+contradicts.
+
 Do not invent facts, infer that an operation succeeded when only an attempt is
 recorded, or claim that files contain particular code unless the available context
-supports that claim.
+supports that claim. When only an attempt is recorded, mark the item "attempted,
+unverified" instead of presenting it as done.
 
 After this prompt you will find the agent's most recent turns inside <recent_turns>: they remain verbatim in its context and are outside your editing scope, so do not alter them or repeat them (or their substance) in your output. Use them — including tool outputs and reasoning — to decide what state the main agent actually needs.
 
@@ -124,9 +137,10 @@ export default function inception(pi: ExtensionAPI) {
 	/** Protected head messages: what stays verbatim in context; shown to the curator read-only. */
 	const headMessages = (projection: SessionProjection, plan: CurationPlan) => regionMessages(projection, plan.cutIndex);
 
-	// Full-fidelity render of the protected head. Unlike serializeConversation (used for the
-	// region being summarized) this keeps thinking blocks and untruncated tool results:
-	// the curator needs complete recent turns to judge what state is still needed.
+	// Full-fidelity render of the protected head. The summarized region gets reasoning
+	// excerpts instead (serialize.ts); the head needs the complete recent turns, including
+	// untruncated tool results: the curator needs complete recent turns to judge what state
+	// is still needed.
 	const contentText = (content: string | Array<{ type?: string; text?: string }>): string => {
 		if (typeof content === "string") return content;
 		const texts: string[] = [];
@@ -224,7 +238,7 @@ export default function inception(pi: ExtensionAPI) {
 		curationInFlight = true;
 		try {
 			const result = await runCurator(ctx, {
-				conversationText: serializeConversation(convertToLlm(target.eligible)),
+				conversationText: serializeConversationWithReasoning(convertToLlm(target.eligible)),
 				eligibleCount: target.eligible.length,
 				previousSummary: target.plan.previousSummary,
 				headText: target.headText,
@@ -267,7 +281,7 @@ export default function inception(pi: ExtensionAPI) {
 			let result: Awaited<ReturnType<typeof runCurator>>;
 			try {
 				result = await runCurator(ctx, {
-					conversationText: serializeConversation(convertToLlm(target.eligible)),
+					conversationText: serializeConversationWithReasoning(convertToLlm(target.eligible)),
 					eligibleCount: target.eligible.length,
 					previousSummary: target.plan.previousSummary,
 					headText: target.headText,

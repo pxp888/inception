@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoundaryEntry } from "./boundary.ts";
 import { findProtectedBoundary, planCuration } from "./boundary.ts";
+import { serializeConversationWithReasoning } from "./serialize.ts";
 
 const e = (role: string): BoundaryEntry => ({ sourceEntry: { type: "message" }, messages: [{ role }] });
 /** A one-turn span: user prompt, tool-calling assistant response, tool result. */
@@ -57,4 +58,35 @@ test("planCuration starts the live region after the newest content-bearing compa
 
 test("planCuration returns null when the live region fits in the head", () => {
 	assert.equal(planCuration([e("user"), e("assistant")], 5), null);
+});
+
+test("region render keeps reasoning as a head+tail excerpt, in both ends", () => {
+	const thinking = `${"plan ".repeat(200)}DECISION: use sqlite WAL`;
+	const out = serializeConversationWithReasoning([
+		{ role: "assistant", content: [{ type: "thinking", thinking }] },
+	]);
+	assert.ok(out.startsWith("[Assistant thinking (excerpt)]: plan "), "excerpt header missing");
+	assert.ok(out.includes("characters of reasoning omitted"), "omission marker missing");
+	assert.ok(out.includes("DECISION: use sqlite WAL"), "reasoning tail dropped");
+});
+
+test("region render keeps short reasoning whole and drops redacted blocks", () => {
+	const out = serializeConversationWithReasoning([
+		{
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "short note" },
+				{ type: "thinking", thinking: "secret", redacted: true },
+				{ type: "text", text: "started" },
+				{ type: "toolCall", id: "1", name: "write", arguments: { path: "app.py" } },
+			],
+		},
+		{ role: "toolResult", toolName: "write", isError: false, content: [{ type: "text", text: "x".repeat(3000) }] },
+	]);
+	assert.ok(out.includes("[Assistant thinking (excerpt)]: short note"));
+	assert.ok(!out.includes("secret"), "redacted thinking leaked");
+	assert.ok(out.includes("[Assistant]: started"));
+	assert.ok(out.includes('[Assistant tool calls]: write(path="app.py")'));
+	assert.ok(out.includes("[Tool result: write]:"), "tool label differs from renderHead");
+	assert.ok(out.includes("[... 1000 more characters truncated]"), "tool result truncation marker missing");
 });
